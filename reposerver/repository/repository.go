@@ -2025,6 +2025,44 @@ func (s *Service) GetRevisionMetadata(ctx context.Context, q *apiclient.RepoServ
 	return metadata, nil
 }
 
+func (s *Service) GetRevisionChartDetails(ctx context.Context, q *apiclient.RepoServerRevisionChartDetailsRequest) (*v1alpha1.ChartDetails, error) {
+	details, err := s.cache.GetRevisionChartDetails(q.Repo.Repo, q.Name, q.Revision)
+	if err == nil {
+		log.Infof("revision chart details cache hit: %s/%s/%s", q.Repo.Repo, q.Name, q.Revision)
+		return details, nil
+	} else {
+		if err != reposervercache.ErrCacheMiss {
+			log.Warnf("revision metadata cache error %s/%s/%s: %v", q.Repo.Repo, q.Name, q.Revision, err)
+		} else {
+			log.Infof("revision metadata cache miss: %s/%s/%s", q.Repo.Repo, q.Name, q.Revision)
+		}
+	}
+	helmClient, revision, err := s.newHelmClientResolveRevision(q.Repo, q.Revision, q.Name, true)
+	if err != nil {
+		return nil, fmt.Errorf("helm client error: %v", err)
+	}
+	chartPath, closer, err := helmClient.ExtractChart(q.Name, revision, false)
+	if err != nil {
+		return nil, fmt.Errorf("extract chart: %v", err)
+	}
+	defer io.Close(closer)
+	helmCmd, err := helm.NewCmdWithVersion(chartPath, helm.HelmV3, q.Repo.EnableOCI, q.Repo.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("helm cmd: %v", err)
+	}
+	defer helmCmd.Close()
+	helmDetails, err := helmCmd.InspectChart()
+	if err != nil {
+		return nil, fmt.Errorf("inspect chart: %v", err)
+	}
+	details, err = getChartDetails(helmDetails)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.cache.SetRevisionChartDetails(q.Repo.Repo, q.Name, q.Revision, details)
+	return details, nil
+}
+
 func fileParameters(q *apiclient.RepoServerAppDetailsQuery) []v1alpha1.HelmFileParameter {
 	if q.Source.Helm == nil {
 		return nil
